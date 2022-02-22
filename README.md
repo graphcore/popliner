@@ -80,3 +80,9 @@ of variables that are missing at that point. Note that the list may contain fals
 so a visual inspection by the user may be required to detect the culprit of the discrepancy.
 A recommended starting point is to identify the largest of the missing variables and to use
 Popvision Graph Analyser to investigate the possible causes of such an omission.
+
+### Development
+
+[DEVELOPMENT.md](DEVELOPMENT.md) contains information about the structure of the repository and
+how PopLiner works.  It is intended as an introduction for people who would like to modify the
+code or base other work upon it.
