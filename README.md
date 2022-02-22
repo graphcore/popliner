@@ -65,3 +65,18 @@ be run using pytest:
 ```cmd
 pytest
 ```
+
+### Diagnostic tools
+
+Popliner may suggest non-optimal or unfeasible splitting points if it is unable to correctly
+interpret memory usage. This can be due to missing programs and variables that are the result
+of missing debug context information among other possible reasons. The user can get insights
+into the Popliner memory analysis by using some provided tools.
+
+Script `tests/test_single_stage.py` analyses the differences between Popliner and the ground
+truth provided by libpva. Among other checks, this script detects the execution bottleneck,
+that is, the tile and step with the highest memory requirements. The script prints the list
+of variables that are missing at that point. Note that the list may contain false positives,
+so a visual inspection by the user may be required to detect the culprit of the discrepancy.
+A recommended starting point is to identify the largest of the missing variables and to use
+Popvision Graph Analyser to investigate the possible causes of such an omission.

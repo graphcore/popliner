@@ -5,6 +5,7 @@ This module contains the Stage class, used to describe a single pipeline stage
 containing one or more operations.
 '''
 
+import sys
 import logging
 from itertools import repeat
 from multiprocessing import Pool
@@ -149,7 +150,10 @@ class Stage:
     def __cache_lowered_vars(report):
         '''Returns and caches a dictionary of brief information for all lowered vars.'''
         Stage.lowered_vars = {}
-        for var in tqdm(report.compilation.loweredVariables.allBriefVars, leave=False):
+        all_brief_vars = report.compilation.loweredVariables.allBriefVars
+        if len(all_brief_vars) == 0:
+            sys.exit("Profile does not contain lowered variables")
+        for var in tqdm(all_brief_vars, leave=False):
             Stage.lowered_vars.setdefault(
                 var.id, (var.equivalenceClass.id, np.uint64(var.bytes), var.tileId))
             if var.equivalenceClass.id not in Stage.equivalence_classes:

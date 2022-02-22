@@ -33,6 +33,10 @@ class Program():  # pylint: disable=R0903
                 self.vertex_count_by_tile[(vertex.type.name, np.uint64(vertex.type.size))] = \
                     np.array(vertex.countByTile, dtype=np.uint64)
 
+        # The raw program is retained for testing purposes.
+        # Note this can prevent future parallelisation
+        self.raw_program = raw
+
 
 class Operation():
     '''This class represents an operation -- a collection of poplar programs

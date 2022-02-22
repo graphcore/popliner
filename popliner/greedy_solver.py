@@ -33,9 +33,13 @@ class GreedySolver:  # pylint: disable=too-few-public-methods
     To achieve a balanced distribution, we first aim for X% of IPU capacity,
     and if the model doesn't fit, we increase that memory proportion.'''
 
-    def __init__(self, report, operations):
+    def __init__(self, report, operations, layer_operations_only=False):
+        self.num_tiles = report.compilation.target.numTiles
         self.report = report
-        self.operations = operations
+        if layer_operations_only:
+            self.operations = [op for op in operations if op.operation.is_in_layer]
+        else:
+            self.operations = operations
         self.splits = []
         self.layers = list(OrderedSet([op.layer_name for op in self.operations]))
 
@@ -77,6 +81,8 @@ class GreedySolver:  # pylint: disable=too-few-public-methods
             "vertex_state": vertex_state,
             "exchange_code": exchange_code,
             "control_code": control_code,
+            # Use for testing
+            "stage": stage,
         }
 
     def __calculate_stage(self, layer_from, mem_per_tile, min_layers_per_stage):
