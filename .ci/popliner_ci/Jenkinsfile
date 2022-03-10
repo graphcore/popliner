@@ -1,14 +1,65 @@
-// Dummy pipeline to check that the Jenkins job works
+// We want this to be a canary job, so use master (explicitly)
+@Library('sw-jenkins-library@master') _
 
-pipeline {
-    agent any
+def containerName = "gc_os_base_ubuntu_18_04"
 
-    stages {
-        stage('Foo') {
-            steps {
-                echo 'This is a dummy CI job step..'
-            }
+standardisedDockerPipeline {
+    CONTAINER_NAME = containerName
+    AGENT_LABEL = 'ec2_analysis_tools_node'
+    DOCKER_IMAGE = containerName
+
+    PRE_BUILD_STEPS = {
+        echo 'Running popliner prebuild steps'
+        dockerPullECR({
+            CONTAINER_NAME = containerName
+            ECR_ID = "${this.ECR_ID}"
+        }, true)
+        echo 'Finished popliner prebuild steps'
+    }
+
+    CONFIGURE_STEPS = {
+        echo 'Running popliner configure step...'
+        // Setup credentials and cookies
+        setupArtifactoryCICookie()
+        installArtifactoryAPI()
+        setupAWSCredentials()
+
+        // Pull git LFS objects
+        steps.sshagent(['dev.id.rsa.buildslave']) {
+            exec 'git lfs install'
+            exec 'git lfs fetch'
+            exec 'git lfs checkout'
         }
+
+        // Install python deps
+        exec 'python3 -m pip install -r requirements.txt'
+
+        // Fetch the latest poplar SDK from artifactory
+        echo 'Fetching latest Poplar SDK package'
+        exec "gc-artifactory-show-properties " +
+            "--product poplar_sdk " +
+            "--branch versioned/master " +
+            "--artifact 'poplar_sdk-ubuntu_18_04*gz' " +
+            "--repo poplar-sdk-stable " +
+            "--specific-property fileurl " +
+            "| xargs gc-artifactory-download " +
+            "--output-file poplar.tar.gz " +
+            "--download-link"
+
+        echo 'Unpacking poplar SDK'
+        exec 'tar xf poplar.tar.gz'
+
+        echo 'Finished popliner configure step...'
+    }
+
+    UNIT_TEST_STEPS = {
+        echo 'Running popliner unit test step...'
+
+        python_path = "${poplar_path}/python:${poplar_path}/lib/python"
+        ld_library_path = "${poplar_path}/lib"
+        exec "source poplar_sdk-ubuntu_18_04-*/poplar-ubuntu_18_04-*/enable.sh;" +
+            "pytest tests"
+
+        echo 'Finished popliner unit test step...'
     }
 }
-
