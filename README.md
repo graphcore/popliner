@@ -51,8 +51,8 @@ PopLiner has the following options:
  - `--solve` Solve for split points (beta).
  - `--num-ipus NUM_IPUS` When solving, the number of IPUs in the system (default=4).
  - `--mem_per_tile MEM_PER_TILE` When solving, the memory per tile in bytes (default=624kB).
- - `--batch_size BATCH_SIZE` When solving, the batch size (default=2).
  - `--operation_breakdown` Outputs a memory breakdown per operation.
+ - `--layer_breakdown` Outputs a memory breakdown per layer.
  - `--memory_affinity` For each layer pair, outputs the size of shared variables.
  - `--interlayer_communication` For each layer pair, outputs the size of variables
    created in the first layer and consumed in the second one.
