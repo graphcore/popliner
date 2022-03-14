@@ -1,0 +1,2 @@
+*.pop filter=lfs diff=lfs merge=lfs -text
+*.cbor filter=lfs diff=lfs merge=lfs -text
