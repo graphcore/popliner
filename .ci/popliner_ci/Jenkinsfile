@@ -1,0 +1,14 @@
+// Dummy pipeline to check that the Jenkins job works
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Foo') {
+            steps {
+                echo 'This is a dummy CI job step..'
+            }
+        }
+    }
+}
+
