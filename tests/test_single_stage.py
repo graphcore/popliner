@@ -314,8 +314,8 @@ def check_single_stage(report, expectations, layer_operations_only=False):
 def test_single_stage_popart_bert_base():
     # diffs are represented in percentage
     expectations = {
-        "num_on_tile_execute_diff": 73.67,
-        "num_do_exchange_diff": 82.47,
+        "num_on_tile_execute_diff": 78.57,
+        "num_do_exchange_diff": 86.79,
         "vertex_code_diff": 50.48,
         "vertex_state_diff": 64.34,
         "control_code_diff": 62.21,
