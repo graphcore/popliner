@@ -1,4 +1,4 @@
-# PopLiner - Auto-Pipelining Library
+# PopLiner
 
 > Copyright 2021 Graphcore Ltd.
 
