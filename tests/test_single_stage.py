@@ -316,15 +316,15 @@ def test_single_stage_popart_bert_base():
     expectations = {
         "num_on_tile_execute_diff": 78.57,
         "num_do_exchange_diff": 86.79,
-        "vertex_code_diff": 50.48,
-        "vertex_state_diff": 64.34,
-        "control_code_diff": 62.21,
-        "exchange_code_diff": 82.88,
+        "vertex_code_diff": 88.42,
+        "vertex_state_diff": 82.21,
+        "control_code_diff": 65.34,
+        "exchange_code_diff": 98.86,
         "steps_diff": 63.57,
         "worst_tile": 632,
         # This is the most important metric, the memory
         # deviation at the bottleneck (tile and step)
-        "worst_tile_step_mem_diff": 16.59,
+        "worst_tile_step_mem_diff": 17.45,
     }
     # If non-layer operations are also considered
     expectations_including_non_layer_operations = {
