@@ -9,36 +9,53 @@ operations in CSV or TSV format.
 import json
 import re
 import logging
+import pickle
 from tqdm import tqdm
-from ordered_set import OrderedSet
 from pva import OperationAnalysis  # pylint: disable=no-name-in-module
-from popliner.operation import Operation
+from popliner.operation import Operation, NamedOperation
 from popliner.stage import Stage
 from popliner import spreadsheet
+import popliner.parse_args
 
 logger = logging.getLogger("root")
 
 
-class NamedOperation:
-    '''Wrapper for a unique Operation (according to uid) to add a name and type.'''
-    def __init__(self, operation_list, uid, name):
-        self.operation_list = operation_list
-        self.uid = uid
-        self.name = name
-        self.layer_name = None
-        self.layer_name_note = ""
+def log_applicable_warnings(percentage_layers_found, calls_with_multiple_input_layers_found,
+                            layer_name_regex):
+    '''Log any applicable warnings following analysis performed in deduce_layer_names().'''
+    if percentage_layers_found < 50:
+        logger.warning(
+            "Only found layers for %d%% of operations. This may indicate a lack of layer names "
+            "in your model or an inappropriate value for --layer-name-regex. Use the "
+            "--operation-breakdown flag to see the names of operations found.",
+            round(percentage_layers_found))
+    else:
+        logger.info("Layers found for %d%% of operations.", round(percentage_layers_found))
 
-    @property
-    def operation(self):
-        '''Returns the unwrapped (unnamed) operation for this object.'''
-        assert self.uid in self.operation_list.unique_ops
-        return self.operation_list.unique_ops[self.uid]
+    if calls_with_multiple_input_layers_found:
+        logger.warning(
+            "Calls were found with inputs from multiple layers - which can lead to poor "
+            "results. Consider recompiling your profile with the environment variable: "
+            "POPART_POPLINER_OUTLINER_REGEX='%s'", layer_name_regex)
 
 
 class OperationList:
     '''Container to store list of operations.'''
 
-    def __init__(self, report):
+    @classmethod
+    def from_file(cls, pickle_load_filename, args=popliner.parse_args.default_args()):
+        '''Load the operation list and Stage static state from a pickle file.'''
+        logger.info("Loading operations from %s...", pickle_load_filename)
+
+        with open(pickle_load_filename, "rb") as in_file:
+            [operations, stage_static_state] = pickle.load(in_file)
+        Stage.set_static_state(stage_static_state)
+        operations.layer_order = args.layer_order
+        operations.deduce_layer_names(args.layer_name_regex, args.inputs_regex_layer_0)
+        return operations
+
+    def __init__(self, report, args=popliner.parse_args.default_args()):
+        self.layer_order = args.layer_order
         Stage.reset_static_state()
         Stage.perform_static_analysis(report)
 
@@ -51,27 +68,58 @@ class OperationList:
 
         op_analysis = OperationAnalysis(report)
         raw_ops = op_analysis.operations
+        uid_to_raw_ops_index = {}
         for i in tqdm(range(len(raw_ops)), leave=False):  # pylint: disable=C0200 # See T56321
             uid = raw_ops[i].debugContext.id
             if uid not in self.unique_ops:
-                self.unique_ops[uid] = Operation(raw_ops[i], i)
+                self.unique_ops[uid] = Operation(raw_ops[i])
+                uid_to_raw_ops_index[uid] = i
             if self.unique_ops[uid].n_progs > 0:
-                self.named_ops.append(NamedOperation(self, uid, raw_ops[i].name))
+                name = raw_ops[i].name
+                if name in ("Call", ""):  # Make easier to identify
+                    op_json = json.loads(self.unique_ops[uid].debug_context_json)
+                    tensor_id = op_json.get("tensorId")
+                    if name == "":
+                        name = "Tensor" if tensor_id else "Anonymous"
+                    if op_json.get("instanceId"):
+                        name += "(" + op_json.get("instanceId") + ")"
+                    if tensor_id:
+                        self.unique_ops[uid].is_tensor = True
+                        name += "/" + tensor_id
+                self.named_ops.append(NamedOperation(self, uid, name))
 
-        logger.info("Operations found - All: %d - With programs: %d - Also unique: %d.",
+        logger.info("Found %d operations, %d of which have programs (%d%% unique operations).",
                     len(raw_ops), len(self.named_ops),
-                    sum(map(lambda op: False if op is None else
-                            op.n_progs > 0, self.unique_ops.values())))
+                    100 * sum(map(lambda op: False if op is None else
+                              op.n_progs > 0, self.unique_ops.values()))/len(self.named_ops))
 
-        self._deduce_layer_names()
-
-        logger.info("Layers found: %s", str(list(OrderedSet([op.layer_name for op in self]))))
-
+        self.deduce_layer_names(args.layer_name_regex, args.inputs_regex_layer_0)
         logger.info("Loading operation variables into Python objects...")
 
-        for _, operation in tqdm(self.unique_ops.items(), leave=False):
-            if operation.n_progs > 0:
-                operation.fetch_vars(raw_ops[operation.raw_ops_index])
+        for uid, operation in tqdm(self.unique_ops.items(), leave=False):
+            # When pickling, do for all ops, not just in-layer ops. Although slower, it is necessary
+            # because the user may use arguments to change the behaviour of deduce_layer_names() the
+            # next time the pickle file is used - changing which operations are in-layer.
+            if args.save_to_file or operation.is_ever_in_layer:
+                operation.used_vars = {var._id for var in raw_ops[uid_to_raw_ops_index[uid]].vars}
+
+        if args.save_to_file:
+            with open(args.save_to_file, "wb") as outfile:
+                pickle.dump([self, Stage.get_static_state()], outfile)
+                logger.info("Saved operations to %s.", args.save_to_file)
+
+    def layers(self):
+        '''Return naturally-sorted list of layers for the operations.'''
+        # Note: We remove '~' placeholder and move None to the start of the list
+        if self.layer_order == "natural":
+            return [None] + sorted({op.layer for op in self} - {None, '~'},
+                                   key=lambda key: [int(value) if value.isdigit() else value
+                                                    for value in re.split('([0-9]+)', key)])
+        if self.layer_order == "steps":
+            dup = {None, '~'}
+            return [None] + [op.layer for op in self if not (op.layer in dup or dup.add(op.layer))]
+
+        assert False, "Invalid layer_order value."
 
     def __len__(self):
         '''Return the number of operations in this operation list.'''
@@ -81,85 +129,91 @@ class OperationList:
         '''Return a single named operation by its index.'''
         return self.named_ops[index]
 
-    def _deduce_layer_names(self):
+    def deduce_layer_names(self, layer_name_regex, inputs_regex_layer_0):
         '''Inspect the debug context layers and work out a sensible name for
         each layer which is not already named.'''
-        cur_layer = "POSTAMBLE"
-        for index in reversed(range(len(self))):
-            if self[index].name == "Call":
-                self.unique_ops[self[index].uid].is_in_layer = True
-                if cur_layer == "POSTAMBLE":
-                    self.unique_ops[self[index].uid].is_in_layer = False
-                    inputs = json.loads(self[index].operation.debug_context_json).get("inputs")
-                    for an_input in inputs:
-                        layer = re.match(r"(Layer\d+)", an_input)
-                        if layer:
-                            self[index].layer_name = layer.groups()[0]
-                            self[index].layer_name_note = "(deduced_for_call_from_input_names)"
-                            break
-            else:
-                for name_part in self[index].name.split('/'):
-                    if name_part.startswith('block') or name_part.startswith('layer') or \
-                       name_part.startswith('Layer'):
-                        self[index].layer_name = name_part
-                        self.unique_ops[self[index].uid].is_in_layer = True
-                        break
-
-            if self[index].layer_name is None:
-                self[index].layer_name = cur_layer
-                self[index].layer_name_note = "(deduced)"
-            else:
-                if self[index].layer_name_note == "":
-                    cur_layer = self[index].layer_name
+        cur_layer = None
+        num_ops_processed = 0
+        num_layerless_ops = 0
+        calls_with_multiple_input_layers_found = False
 
         for index in reversed(range(len(self))):
-            if len(set(self[index].name.split('/')).intersection({'Embedding', 'Squad'})) > 0:
-                self[index].layer_name = "POSTAMBLE"
-                self[index].layer_name_note = "(keyword filter)"
-                self.unique_ops[self[index].uid].is_in_layer = False
+            if self[index].operation.is_tensor:
+                self[index].set_layer(None, "tensor_filter")
+                continue
+
+            num_ops_processed += 1
+            layers_from_name = set(re.findall(layer_name_regex, self[index].name))
+            if len(layers_from_name) == 1:
+                cur_layer = self[index].set_layer(''.join(layers_from_name.pop()))
+                continue
+
+            op_json = json.loads(self[index].operation.debug_context_json)
+            all_inputs = "/".join(op_json.get("inputs") or []).replace('.', '/')
+            layers_from_inputs = set(re.findall(layer_name_regex, all_inputs))
+            if len(layers_from_inputs) == 1:
+                cur_layer = self[index].set_layer(''.join(layers_from_inputs.pop()),
+                                                  "deduced_from_input_names")
+            elif len(layers_from_inputs) == 0 and self[index].name.startswith("Call"):
+                self[index].set_layer(cur_layer, "deduced_from_following_operation")
+            elif re.search(inputs_regex_layer_0, all_inputs):
+                # Use placeholder value until we can determine what the first layer is
+                cur_layer = self[index].set_layer('~', "inputs_regex_layer_0")
+                logger.debug("inputs_regex_layer_0 found in %s - assign layer 0", self[index].name)
+            else:
+                cur_layer = self[index].set_layer(None,
+                                                  str(len(layers_from_inputs)) + "_input_layers")
+                num_layerless_ops += 1
+                if not self[index].name.startswith("Anonymous"):
+                    logger.debug(
+                        "No layer for op '%s' (%d programs, %d input layers)...",
+                        self[index].name, self[index].operation.n_progs, len(layers_from_inputs))
+                    if self[index].name.startswith("Call"):
+                        calls_with_multiple_input_layers_found = True
+
+        # Replace '~' placeholder with first layer (other than None)
+        first_layer = self.layers()[1] if len(self.layers()) > 1 else None
+        for index in reversed(range(len(self))):
+            if self[index].layer == '~':
+                self[index].set_layer(first_layer, self[index].layer_name_note)
+
+        logger.info("Layers found: %s", str(self.layers()))
+        percentage_layers_found = 100*(num_ops_processed-num_layerless_ops)/num_ops_processed
+        log_applicable_warnings(percentage_layers_found, calls_with_multiple_input_layers_found,
+                                layer_name_regex)
 
     def as_csv(self, delimiter, limit=None):
         '''Get entire operations list as a CSV or TSV string.'''
         logger.info("Generating CSV output...")
-        csv = ''
+        result = ''
         for field in spreadsheet.Field:
-            csv += field.column_name + delimiter
-        previous_op_name = ['']
-        for index, item in enumerate(self.named_ops):
-            if item.name is None or item.name == "":
-                continue
-            if limit is not None:
-                limit -= 1
-                if limit == 0:
-                    break
-            # Insert blank line before every new value in first column
-            name_parts = item.name.split('/')
-            if name_parts is None or len(name_parts) == 0:
-                name_parts = ["Anonymous"]
-            if name_parts[0] != previous_op_name[0]:
-                csv += '\n'
-                previous_op_name = name_parts
+            result += field.column_name + delimiter
 
-            csv += delimiter.join([f.as_string(self.named_ops, index)
-                                  for f in spreadsheet.Field]) + '\n'
-
-        return csv
+        stages = {}
+        ops = self.named_ops[:limit]
+        previous_layer = None
+        for named_op in tqdm(ops):
+            if named_op.layer != previous_layer:
+                previous_layer = named_op.layer
+                result += "\n"
+            stage = stages.get(named_op.uid) or stages.setdefault(named_op.uid, Stage(named_op))
+            result += "\n" + spreadsheet.operation_to_string(named_op, stage, delimiter)
+        return result
 
     def layers_as_csv(self, delimiter):
         '''Get entire layers list as a CSV string.'''
         logger.info("Generating CSV output...")
         csv = ''
 
-        for field in spreadsheet.LayerField:
+        for field in spreadsheet.StageField:
             csv += field.column_name + delimiter
         csv += "\n"
 
-        for layer in list(OrderedSet([op.layer_name for op in self.named_ops])):
-            stage = Stage()
-            for operation in self.named_ops:
-                if operation.layer_name == layer:
-                    stage.add(operation.operation)
-            csv += delimiter.join([f.as_string(layer, stage)
-                                  for f in spreadsheet.LayerField]) + '\n'
+        layers = self.layers()
+        stages = {layer: Stage() for layer in layers}
+        for operation in self.named_ops:
+            stages[operation.layer].add(operation)
 
+        for layer in tqdm(layers):
+            csv += spreadsheet.stage_to_string(layer, stages[layer], delimiter) + '\n'
         return csv

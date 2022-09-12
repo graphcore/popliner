@@ -41,63 +41,61 @@ automatically split up the model to fit on the number of IPUs specified in the
 `--num-ipus` argument.  The details of the splits are then written to the
 output.
 
+#### [popliner/parse_args.py](popliner/parse_args.py)
+
+File used simply to parse arguments passed in from command line, or from a list
+of strings.  File can also provide default values for all arguments.
+
 #### [popliner/operation.py](popliner/operation.py)
 
-This file contains the `Operation` class which represents high-level
-operations in the graph.  Each operation contains one or more programs from
-the overall program tree.  The class provides methods which give information
-about the memory consumption of the programs in the operation.
+This file contains the `Operation` and `NamedOperation` classes which represent
+high-level operations in the graph.  `NamedOperation` is a wrapper around an
+`Operation` which associates a name and layer with the operation.  Note that
+this class stores the UID of the operation and does not store an actual
+`Operation` object.  This is an optimisation: some models re-use the same
+operation many times with different names so using `NamedOperation` minimises
+the additional cost of each name.
 
-This file also contains the `Program` class which represents a single Poplar
-program.
+The `Operation` class stores attributes such as the programs steps and the
+lowered variable IDs used by the operation.
 
 #### [popliner/operation_list.py](popliner/operation_list.py)
 
-This file contains two classes, `NamedOperation` and `OperationList`.
-
-`NamedOperation` is a wrapper around an operation which associates a name and
-type with the operation.  Note that this class stores the UID of the operation
-and does not store an actual `Operation` object.  This is an optimisation: some
-models re-use the same operation many times with different names so using
-NamedOperation minimises the additional cost of each name.
-
-`OperationList` stores a list of operations.  The basic data structure is an
-ordered list of `NamedOperation` objects and a mapping from each operation
-UID to a corresponding `Operation` object.  The list is populated by walking
-the report's program tree and debug context layers.  The program tree is
-walked in order to collect a list of all of the programs in the report.  Then,
-for each program found, we inspect all of the debug context layers it is
-contained within as these provide information about which high-level operation
-a program is part of.  The operations found from the debug context information
-are all added to the list of operations stored in `OperationList`.
+This file contains the `OperationList` class, which stores a list of named
+operations.  The list is populated using the `OperationAnalysis` class from
+libpva, which walks the report's program tree and debug context layers.  The
+program tree is walked in order to collect a list of all of the programs in the
+report.  Then, for each program found, we inspect all of the debug context
+layers it is contained within as these provide information about which
+high-level operation a program is part of.  The operations found from the debug
+context information are all added to the list of operations stored in
+`OperationList`.
 
 #### [popliner/spreadsheet.py](popliner/spreadsheet.py)
 
-This file contains classes used to represent spreadsheet cell formulae.  When
-the tab-separated values (TSV) output format is selected the output contains
-formulae instead of just the final calculated values (this is helpful to
-understand where values come from and in case the user wants to modify them).
-`Formula` is the base class for spreadsheet formulae and provides methods
-which return the formula text (for TSV output) and the final numerical value
-calculated by evaluating the formula (for CSV output).
+This file enables the comma-separated or tab-separated output of the operation
+breakdown and layer breakdown. This output can easily be opened in a spreadsheet
+application for easier viewing/analysis.
 
-A number of other classes derive from `Formula` and represent the different
-types of spreadsheet formulae used.
+The output contains a column for each member of `Field` or `StageField` for
+operation breakdown or layer breakdown, respectively. Each of these members is a
+name and lambda function which calculates the value. Note: to produce layer
+breakdown output, stages associated with each individual layer must be passed to
+`stage_to_string()` -- this is why we use the name `StageField` instead of
+`LayerField`. This file has no concept of layers -- only operations and stages.
 
-Finally, the `Field` class represents a single field in a spreadsheet (CSV or
-TSV) as well as containing the list of columns in the spreadsheet.  It
-contains lambda functions to get the value of the field depending which column
-it is in.
 
 #### [popliner/stage.py](popliner/stage.py)
 
 This file contains the `Stage` class which represents a single stage in the
-pipeline created by PopLiner's solver.  Each `Stage` holds a number of
-`Operation` objects, representing the operations which PopLiner proposes to
-place in that pipeline stage.  The `Stage` objects have a number of methods
-which return information about the memory consumption on each tile of that
-pipeline stage -- this is used to determine whether a stage has room for more
-operations and whether the stage will fit on an IPU.
+pipeline created by PopLiner's solver.  A number of `NamedOperation` objects are
+added to a `Stage`, representing the operations which PopLiner proposes to
+place in that pipeline stage. Each `Stage` holds the program IDs and
+lowered variable IDs of all operations that have been added.  The `Stage`
+objects have a number of methods which return information about the memory
+consumption on each tile of that pipeline stage -- this is used to determine
+whether a stage has room for more operations and whether the stage will fit on
+an IPU.
 
 The `Stage` class also contains a number of static variables.  These cache
 information loaded from the profile report to avoid needing to read data from

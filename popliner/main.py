@@ -7,119 +7,105 @@ split-points.  Can also optionally automatically solve for split points to fit
 on a given number of IPUs.
 '''
 
-import argparse
 import logging
+import json
+import sys
+import coloredlogs
 from pva import openReport  # pylint: disable=no-name-in-module
 from popliner.operation_list import OperationList
 from popliner.greedy_solver import GreedySolver
+import popliner.parse_args
+
+VERSION = "1.0.0"
 
 # import cProfile
 # pr = cProfile.Profile()
 # pr.enable()
 
-formatter = logging.Formatter("%(asctime)s;%(levelname)s;%(message)s", "%Y-%m-%d %H:%M:%S")
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
+LOGO = r"""
+y.        r__    c ____                 _      _                     r__
+0  *  y'   r\ \   c|  _ \   ___   _ __  | |    (_) _ __    ___  _ __  r\ \
+y-     0*   r\ \  c| |_) | / _ \ | '_ \ | |    | || '_ \  / _ \| '__|  r\ \
+0 '  y~    0` r) ) c|  __/ | (_) || |_) || |___ | || | | ||  __/| |      r) )
+y~    0-  y' r/ /  c|_|     \___/ | .__/ |_____||_||_| |_| \___||_|     r/ /
+0  *   y~  0r/_/  0-------------- c|_| 0-------------------------------  r/_/
+y`0                                                         """
+LOGO = LOGO.replace("0", '\33[0;1m')   # Reset colour
+LOGO = LOGO.replace("r", '\33[31;1m')  # Red
+LOGO = LOGO.replace("c", '\33[96;1m')  # Cyan
+LOGO = LOGO.replace("y", '\33[33;1m')  # Yellow
+print(LOGO + '\u001b[0mv' + VERSION + "\n", file=sys.stderr)
+
 logger = logging.getLogger("root")
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
+coloredlogs.install(level='INFO', fmt='%(asctime)s %(levelname)s: %(message)s', datefmt='%H:%M:%S')
 
-FORMAT_HELP = """
-Select the format of the output.
-tsv: Tab-separated values.
-csv: Comma-separated values.
-json: JSON format. Only results in output if --solve is also used.
-(default = tsv)
-"""
+args = popliner.parse_args.get_args()
 
-parser = argparse.ArgumentParser(description='Process profile.pop and debug.cbor and produce a \
-spreadsheet containing information to help decide pipelining split-points.')
-parser.add_argument('--format', choices=('tsv', 'csv', 'json'), default='tsv', help=FORMAT_HELP)
-parser.add_argument('--memory_totals', action='store_true', help='Print total memory by category.')
-parser.add_argument('--solve', action='store_true', help='Solve for split points (beta).')
-parser.add_argument('--num-ipus', type=int, default=4,
-                    help='When solving, the number of IPUs in the system (default=4).')
-parser.add_argument('--mem_per_tile', type=int, default=638976,
-                    help='When solving, the memory per tile in bytes (default=624kB).')
-parser.add_argument('--operation_breakdown', action='store_true',
-                    help='Outputs a memory breakdown per operation.')
-parser.add_argument('--layer_breakdown', action='store_true',
-                    help='Outputs a memory breakdown per layer.')
-parser.add_argument('--memory_affinity', action='store_true',
-                    help='For each layer pair, outputs the size of shared variables.')
-parser.add_argument('--interlayer_communication', action='store_true',
-                    help='''For each layer pair, outputs the size of variables created in the
-                          first layer and consumed in the second one.''')
-parser.add_argument('profile', help='Path to profile.pop file.')
-parser.add_argument('debug', help='Path to debug.cbor file.')
-args = parser.parse_args()
+if args.load_from_file:
+    assert args.save_to_file is None, "Cannot use --save-to-file with --load-from-file."
+    assert args.debug is None, "Do not provide 'debug' path with --load-from-file."
+    operations = OperationList.from_file(args.profile, args)
+else:
+    assert args.debug, "Please provide a 'debug' path."
+    logger.info("Loading report...")
+    report = openReport(args.profile, args.debug)
+    operations = OperationList(report, args)
 
-logger.info("Loading profile...")
-report = openReport(args.profile, args.debug)
-
-operations = OperationList(report)
+solver = GreedySolver(operations)
 DELIMITER = ',' if args.format == "csv" else '\t'
 
 if args.operation_breakdown:
-    if args.format == 'csv':
-        print(operations.as_csv(delimiter=DELIMITER))
-    elif args.format == 'tsv':
-        print(operations.as_csv(delimiter=DELIMITER))
+    print(operations.as_csv(delimiter=DELIMITER))
 
 if args.layer_breakdown:
     print(operations.layers_as_csv(delimiter=DELIMITER))
 
-#######################################################
-# Compare total memory by category
 if args.memory_totals:
-    solver = GreedySolver(report, operations)
-    total = solver.get_single_stage_mem_for_inference()
+    total = solver.get_memory_for_layers()
     print("Total memory: " + str(sum(total["total_mem"])))
 
     TILES_TO_SHOW = 10
+    # Compare total memory by category
     print("Category" + DELIMITER, end='')
     for i in range(TILES_TO_SHOW):
         print("Tile " + str(i) + DELIMITER, end='')
     print("")
 
-    print("Always live", end='')
-    for i in range(TILES_TO_SHOW):
-        print(DELIMITER + str(report.compilation.tiles[i].memory.alwaysLiveBytes), end='')
-    print("")
-    print("Not-always live", end='')
-    for i in range(TILES_TO_SHOW):
-        print(DELIMITER + str(report.compilation.tiles[i].memory.notAlwaysLiveBytes), end='')
-    print("")
+    if args.profile:
+        print("Always live", end='')
+        for i in range(TILES_TO_SHOW):
+            print(DELIMITER + str(report.compilation.tiles[i].memory.alwaysLiveBytes), end='')
+        print("")
+        print("Not-always live", end='')
+        for i in range(TILES_TO_SHOW):
+            print(DELIMITER + str(report.compilation.tiles[i].memory.notAlwaysLiveBytes), end='')
+        print("")
+    else:
+        print("Provide profile.pop path to see variable memory usage by tile.")
 
-    if args.memory_affinity:
-        solver.calculate_memory_affinity()
-    if args.interlayer_communication:
-        solver.calculate_interlayer_exchange()
-#######################################################
+if args.memory_affinity:
+    solver.calculate_memory_affinity()
+
+if args.interlayer_communication:
+    solver.calculate_interlayer_exchange()
 
 if args.solve:
-    solver = GreedySolver(report, operations)
-    success = solver.solve(args.num_ipus, args.mem_per_tile)
-
-    if args.format == 'json':
-        print(solver.get_splits_as_json())
+    success_mem_prop = solver.solve(args.num_ipus, args.mem_per_tile)
+    if success_mem_prop:
+        splits = solver.get_splits_totals()
+        print(json.dumps(splits, indent=4))
+        layers = operations.layers()
+        for split in splits[:-1]:
+            layers.insert(layers.index(split["layer_to"])+1, "|")
+        logger.info("SUCCESS: %s", " ".join(["["] + [str(layer) for layer in layers] + ["]"]))
+        if len(splits) != args.num_ipus:
+            logger.warning("Used %d IPUs instead of the %d requested.", len(splits), args.num_ipus)
     else:
-        print("")
-        if not success:
-            print("Unable to fit model in ipus")
-        else:
-            header = ["layer_from", "layer_to", "total_mem", "variables", "vertex_code",
-                      "vertex_state", "exchange_code"]
-            print(DELIMITER.join(header))
-            for split in solver.get_splits_totals():
-                my_list = [split["layer_from"],
-                           str(split["layer_to"]),
-                           str(split["mem"]["total_mem"]),
-                           str(split["mem"]["variables"]),
-                           str(split["mem"]["vertex_code"]),
-                           str(split["mem"]["vertex_state"]),
-                           str(split["mem"]["exchange_code"])]
-                print(DELIMITER.join(my_list))
+        splits = solver.get_splits_totals()
+        print(json.dumps(splits, indent=4))
+
+        logger.info("FAILURE: Unable to fit model on IPUs. Best effort printed.")
+
 
 # pr.disable()
 # pr.print_stats(sort='time')

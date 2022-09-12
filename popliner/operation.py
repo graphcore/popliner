@@ -1,5 +1,6 @@
 # Copyright (c) 2021 Graphcore Ltd. All rights reserved.
 
+from collections import namedtuple
 import pva
 import numpy as np
 from popliner.stage import Stage
@@ -9,93 +10,86 @@ This module contains the Operation class, which represents a unique operation
 according to debug context ID.
 '''
 
+Program = namedtuple('Program',
+                     ['control_code_by_tile', 'exchange_code_by_tile', 'vertex_count_by_tile'])
 
-class Program():  # pylint: disable=R0903
-    '''Class to hold information about a single Poplar program.'''
 
-    def __init__(self, raw):
-        assert Stage.static_analysis_performed
+def _get_program(raw):
+    assert Stage.static_analysis_performed
 
-        # As the control code of a program includes its children's,
-        # we only consider childless programs to avoid counting
-        # control code twice. This means we ignore the control code
-        # of programs like Sequence and Repeat but it is negligible.
-        self.control_code_by_tile = np.array(raw.controlCodeByTile, dtype=np.uint64) \
-            if (len(raw.children) == 0) else np.zeros(Stage.num_tiles, dtype=np.uint64)
+    # As the control code of a program includes its children's,
+    # we only consider childless programs to avoid counting
+    # control code twice. This means we ignore the control code
+    # of programs like Sequence and Repeat but it is negligible.
+    control_code_by_tile = np.array(raw.controlCodeByTile, dtype=np.uint64) \
+        if (len(raw.children) == 0) else np.zeros(Stage.num_tiles, dtype=np.uint64)
 
-        # pylint: disable=E1101
-        self.exchange_code_by_tile = np.array(raw.codeBytesByTile, dtype=np.uint64) if raw.type == \
-            pva.Program.Type.DoExchange else np.zeros(Stage.num_tiles, dtype=np.uint64)
+    # pylint: disable=E1101
+    exchange_code_by_tile = np.array(raw.codeBytesByTile, dtype=np.uint64) if raw.type == \
+        pva.Program.Type.DoExchange else np.zeros(Stage.num_tiles, dtype=np.uint64)
 
-        self.vertex_count_by_tile = {}
-        if raw.type == pva.Program.Type.OnTileExecute:
-            for vertex in raw.computeset.vertices:
-                self.vertex_count_by_tile[(vertex.type.name, np.uint64(vertex.type.size))] = \
-                    np.array(vertex.countByTile, dtype=np.uint64)
+    vertex_count_by_tile = {}
+    if raw.type == pva.Program.Type.OnTileExecute:
+        for vertex in raw.computeset.vertices:
+            vertex_count_by_tile[(vertex.type.name, np.uint64(vertex.type.size))] = \
+                np.array(vertex.countByTile, dtype=np.uint64)
 
-        # The raw program is retained for testing purposes.
-        # Note this can prevent future parallelisation
-        self.raw_program = raw
+    return Program(control_code_by_tile, exchange_code_by_tile, vertex_count_by_tile)
 
 
 class Operation():
     '''This class represents an operation -- a collection of poplar programs
     grouped based on their debug context.'''
-    programs = {}
 
-    def __init__(self, raw_op, raw_ops_index):
-        self.raw_ops_index = raw_ops_index
+    def __init__(self, raw_op, used_vars=None):
+        self.is_ever_in_layer = False
+        self.is_tensor = False
         progs = raw_op.programs()
         self.n_progs = len(progs)
         if self.n_progs == 0:
             return
-        self.programs = set()
         self.program_ids = set()
         for prog in progs:
-            cached_prog = Operation.programs.setdefault(prog._id, Program(prog))
-            self.programs.add(cached_prog)
             self.program_ids.add(prog._id)
+            if prog._id not in Stage.programs_cache:
+                Stage.programs_cache[prog._id] = _get_program(prog)
 
-        self.is_in_layer = False
         self.first_step_index = raw_op.firstStepIndex
         self.last_step_index = raw_op.lastStepIndex
         self.debug_context_json = raw_op.debugContext.json
-        self.stage = None
-        self.used_vars = None
+        self.used_vars = set()
+        if used_vars:
+            self.used_vars.update(used_vars)
 
-    def fetch_vars(self, raw_op):
-        '''Fetch used variables from raw op. Must be called before self.used_vars can be used.'''
-        # Ignore variables from non-layer operations as we assume they will be distributed among
-        # pipline stages when recompiled.
-        if self.is_in_layer:
-            self.used_vars = set(var._id for var in raw_op.vars)  # pylint: disable=W0212
-        else:
-            self.used_vars = set()
 
-    def __stage(self):
-        '''If this operation is already a member of a pipeline stage, return
-        that stage.  Otherwise, create a new pipeline stage, add this
-        operation to it, and return the new stage.'''
-        if self.stage is None:
-            self.stage = Stage().add(self)
-        return self.stage
+class NamedOperation():
+    '''Wrapper for a unique Operation (according to uid) to add a name and layer.'''
+    def __init__(self, operation_list, uid, name):
+        self.unique_ops = operation_list.unique_ops
+        self.uid = uid
+        self.name = name
+        self._layer = None
+        self.layer_name_note = ""
 
-    def vertex_code_bytes(self):
-        '''Returns the number of code bytes of the vertex instances.'''
-        return np.sum(self.__stage().code_bytes_by_tile())
+    @property
+    def operation(self):
+        '''Returns the unwrapped (unnamed) operation for this object.'''
+        return self.unique_ops[self.uid]
 
-    def vertex_state_bytes(self):
-        '''Returns the number of vertex state bytes for this operation.'''
-        return np.sum(self.__stage().vertex_state_bytes_by_tile())
+    def set_layer(self, layer, note=""):
+        '''Set layer of this operation with explanation note. Returns the layer set.'''
+        if layer is not None:
+            self.operation.is_ever_in_layer = True
+        self._layer = layer
+        self.layer_name_note = note
+        return self._layer
 
-    def exchange_code(self):
-        '''Returns the exchange code size for this operation.'''
-        return np.sum(self.__stage().exchange_code_by_tile())
+    @property
+    def layer(self):
+        '''Returns the layer of this operation.'''
+        return self._layer
 
-    def variable_bytes(self):
-        '''Returns both activations and weights.'''
-        return np.sum(self.__stage().max_vars_usage())
-
-    def control_code_bytes(self):
-        '''Return the number of control code bytes for this operation.'''
-        return np.sum(self.__stage().control_code_by_tile())
+    @property
+    def is_in_layer(self):
+        '''Returns true if a layer has been set for this operation. Otherwise, false.'''
+        return self.layer is not None

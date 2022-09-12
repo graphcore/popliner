@@ -8,15 +8,30 @@ from enum import Enum
 import numpy as np
 
 
-class LayerField(Enum):
+def operation_to_string(named_op, stage, delimiter):
+    '''Returns the named_op as a string according to fields in Field.'''
+    return delimiter.join([f.as_string(named_op, stage) for f in Field])
+
+
+def stage_to_string(name, stage, delimiter):
+    '''Returns the stage as a string according to fields in StageField.'''
+    return delimiter.join([f.as_string(name, stage) for f in StageField])
+
+
+class StageField(Enum):
     '''List of columns in spreadsheet in order starting from A.
     Format used: ENTRY = "<Column name>", <function to get associated value>"'''
-    LAYER = "Layer", lambda a: a.name
+    NAME = "Name", lambda a: a.name
     VERTEX_STATE = "Vertex state", lambda a: np.sum(a.vertex_state_bytes_by_tile())
     VERTEX_CODE = "Vertex code", lambda a: np.sum(a.code_bytes_by_tile())
     EXCHANGE_CODE = "Exchange code", lambda a: np.sum(a.exchange_code_by_tile())
     CONTROL_CODE = "Control code", lambda a: np.sum(a.control_code_by_tile())
-    VARIABLES = "Variables", lambda a: np.sum(a.max_vars_usage())
+    VARIABLES = "Variables", lambda a: np.sum(a.max_vars_usage(False))
+    TOTAL = "Total (MB)", lambda a: round((np.sum(a.vertex_state_bytes_by_tile()) +
+                                           np.sum(a.code_bytes_by_tile()) +
+                                           np.sum(a.exchange_code_by_tile()) +
+                                           np.sum(a.control_code_by_tile()) +
+                                           np.sum(a.max_vars_usage())) / (1024*1024))
 
     def __new__(cls, *_args, **_kwds):
         value = len(cls.__members__) + 1
@@ -28,23 +43,24 @@ class LayerField(Enum):
         self.column_name = name
         self.value_function = value_function
 
-    def as_string(self, name, layer):
+    def as_string(self, name, stage):
         '''Get this field as a string.'''
-        layer.name = name
-        return str(self.value_function(layer))
+        stage.name = name
+        return str(self.value_function(stage))
 
 
 class Field(Enum):
     '''List of columns in spreadsheet in order starting from A.
     Format used: ENTRY = "<Column name>", <function to get associated value>"'''
 
-    LAYER = "Layer", lambda a: a.layer_name + str(a.layer_name_note)
-    FULL_NAME = "Full name", lambda a: a.name
-    VERTEX_STATE = "Vertex state", lambda a: a.operation.vertex_state_bytes()
-    VERTEX_CODE = "Vertex code", lambda a: a.operation.vertex_code_bytes()
-    EXCHANGE_CODE = "Exchange code", lambda a: a.operation.exchange_code()
-    CONTROL_CODE = "Control code", lambda a: a.operation.control_code_bytes()
-    VARIABLES = "Variables", lambda a: a.operation.variable_bytes()
+    LAYER = "Layer", lambda op, _: str(op.layer)
+    NOTE = "Note", lambda op, _: str(op.layer_name_note)
+    FULL_NAME = "Full name", lambda op, _: op.name
+    VERTEX_STATE = "Vertex state", lambda _, stage: np.sum(stage.vertex_state_bytes_by_tile())
+    VERTEX_CODE = "Vertex code", lambda _, stage: np.sum(stage.code_bytes_by_tile())
+    EXCHANGE_CODE = "Exchange code", lambda _, stage: np.sum(stage.exchange_code_by_tile())
+    CONTROL_CODE = "Control code", lambda _, stage: np.sum(stage.control_code_by_tile())
+    VARIABLES = "Variables", lambda _, stage: np.sum(stage.max_vars_usage(False))
 
     def __new__(cls, *_args, **_kwds):
         value = len(cls.__members__) + 1
@@ -57,6 +73,6 @@ class Field(Enum):
         self.column_letter = chr(self.value + ord('A') - 1)
         self.value_function = value_function
 
-    def as_string(self, operations, op_index):
+    def as_string(self, named_op, stage):
         '''Get this field as a string.'''
-        return str(self.value_function(operations[op_index]))
+        return str(self.value_function(named_op, stage))

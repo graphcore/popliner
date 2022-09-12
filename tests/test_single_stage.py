@@ -3,7 +3,7 @@
 from popliner.operation_list import OperationList
 from popliner.greedy_solver import GreedySolver
 from popliner.stage import Stage
-import pva  # pylint: disable=no-name-in-module
+import pva
 import pytest
 import logging
 import argparse
@@ -51,15 +51,17 @@ def print_diff(name, libpva, popliner):
 def check_programs(report, popliner, expectations):
     # Count all programs via libpva
     libpva_visitor = ProgCounterVisitor()
+    programs = {}
     for prog in report.compilation.programs:
+        programs.setdefault(prog._id, prog)
         prog.accept(libpva_visitor)
     assert len(libpva_visitor.onTileExecutes) > 0
     assert len(libpva_visitor.doExchanges) > 0
 
     # Count the programs Popliner takes into account
     popliner_visitor = ProgCounterVisitor()
-    for prog in popliner["stage"].programs:
-        prog.raw_program.accept(popliner_visitor)
+    for prog_id in popliner["stage"].program_ids:
+        programs[prog_id].accept(popliner_visitor)
 
     # libpva should return all programs
     assert len(libpva_visitor.onTileExecutes) >= len(popliner_visitor.onTileExecutes)
@@ -296,10 +298,10 @@ def check_memory_bottleneck(report, popliner, expectations):
 # variable.
 def check_single_stage(report, expectations, layer_operations_only=False):
     operations = OperationList(report)
-    solver = GreedySolver(report, operations, layer_operations_only)
+    solver = GreedySolver(operations, layer_operations_only)
 
     # Get one single stage rather than splitting the model into multiple
-    total = solver.get_single_stage_mem_for_inference()
+    total = solver.get_memory_for_layers()
 
     # The model must be single IPU
     assert len(total["total_mem"]) == 1472
